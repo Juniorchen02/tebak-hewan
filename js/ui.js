@@ -31,7 +31,7 @@ function renderSetup(){
         <li>Tugasmu <b>menebak hewan milik lawan</b>. Gambar dan namanya disembunyikan, tapi tiap petunjuk yang kamu tebak benar akan terbuka. Tebak dengan kalimatmu sendiri, misalnya <i>"hidup di laut"</i>.</li>
         <li>Tebakan petunjuk <b>benar</b>: petunjuk terbuka, darah aman. <b>Salah</b>: -1 darah.</li>
         <li>Selama darah masih ada, kamu boleh <b>langsung jawab nama hewan</b>: benar <b>+${CONFIG.pointsDirect} poin</b>, salah <b>-1 darah</b>.</li>
-        <li>Tiap kehilangan ${CONFIG.cardEveryLost} darah, kamu dapat <b>1 kartu support</b> acak.</li>
+        <li>Tiap kehilangan ${CONFIG.cardEveryLost} darah, kamu dapat <b>1 kartu support</b> lewat spin. Ada 4 kelangkaan: Biasa, Langka, Epik, Legendaris.</li>
         <li>Darah habis: kamu <b>wajib menjawab nama hewan</b>. Benar <b>+${CONFIG.pointsForced} poin</b>, salah berarti <b>kalah</b>.</li>
         <li>Setelah menjawab benar, kamu mendapat hewan baru dengan darah penuh. Yang pertama mencapai target poin menang.</li>
       </ul>
@@ -98,6 +98,39 @@ function confettiHtml(){
   return `<div class="r-confetti">${h}</div>`;
 }
 
+const cardOf = id => CARDS.find(c => c.id === id);
+const rtag = c => `<em class="rtag">${RARITY[c.rar].label}</em>`;
+
+/* Spin kartu: reel bergerak dari kanan ke kiri lalu berhenti di kartu yang didapat.
+   Animasi hanya diputar sekali per undian; kalau layar digambar ulang, posisinya dilanjutkan (delay negatif). */
+function spinState(spin){
+  if(L.spinId !== spin.id){ L.spinId = spin.id; L.spinStart = Date.now(); }
+  const reduced = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const el = reduced ? CONFIG.spinMs : Math.min(Date.now() - L.spinStart, CONFIG.spinMs);
+  return { el, left: CONFIG.spinMs - el, done: el >= CONFIG.spinMs };
+}
+function spinHtml(r, actor){
+  const s = r.spin; if(!s) return "";
+  const st = spinState(s), win = cardOf(s.card);
+  const items = s.strip.map((id, i) => { const c = cardOf(id);
+    return `<div class="reel-item rar-${c.rar}${i === s.win ? " win" : ""}" style="--d:${st.left}ms"><span class="ri-icon">${c.icon}</span><span class="ri-name">${c.name}</span></div>`;
+  }).join("");
+  return `<div class="spin-box">
+      <div class="spin-title">🎁 ${esc(actor.name)} mendapat kartu support!</div>
+      <div class="reel"><div class="reel-pointer"></div>
+        <div class="reel-track" style="--dur:${CONFIG.spinMs}ms;--delay:${-st.el}ms">${items}</div></div>
+      <div class="r-gift after-spin rar-${win.rar}" style="--d:${st.left}ms">${rtag(win)}<br>${win.icon} <b>${win.name}</b><small>${win.desc}</small></div>
+    </div>`;
+}
+function setupReel(r){
+  const s = r.spin, reel = document.querySelector(".reel"), track = document.querySelector(".reel-track");
+  if(!s || !reel || !track) return;
+  const w = track.children[s.win], size = w.offsetWidth;
+  const end = -(w.offsetLeft + size/2 + s.jit*size - reel.clientWidth/2);   // posisi akhir: kartu pemenang tepat di garis tengah
+  track.style.setProperty("--end", end + "px");
+  if(spinState(s).done){ track.style.animation = "none"; track.style.transform = `translateX(${end}px)`; }
+}
+
 function drawResult(){
   const r = G.view.r, actor = G.players[G.turn], mine = G.turn === ME;
   app.innerHTML = scoreboard() + `
@@ -108,10 +141,12 @@ function drawResult(){
       <p class="r-msg">${mine ? "" : `<b>${esc(actor.name)}</b> menebak. `}${r.msg}</p>
       ${r.reveal ? `<div class="r-reveal">${r.reveal}</div><br>` : ""}
       ${r.badge ? `<div class="r-badge">${r.badge}</div>` : ""}
+      ${spinHtml(r, actor)}
       ${r.extra || ""}
-      ${mine ? `<button class="big" id="next">Lanjut</button>`
+      ${mine ? `<button class="big ${r.spin ? "after-spin" : ""}" id="next" style="--d:${r.spin ? spinState(r.spin).left : 0}ms">Lanjut</button>`
              : `<p class="meta">Menunggu ${esc(actor.name)} menekan Lanjut<span class="dots"></span></p>`}
     </div>` + connBanner();
+  setupReel(r);
   if(mine) document.getElementById("next").onclick = () => send({ type:"next" });
 }
 
@@ -138,24 +173,26 @@ function drawGame(){
   if(L.key !== key){ L.key = key; L.tab = myTurn ? "guess" : "mine"; }
   const tab = L.tab;
 
-  const total = a.traits.length, opened = me.rev.length, oppGuessed = opp.rev.length;
+  const total = me.active.length, opened = me.rev.length, oppGuessed = opp.rev.length;
   const myImgHtml = mine.img ? `<img src="${esc(mine.img)}" alt="hewan kamu">` : `<div class="emoji">${mine.emoji}</div>`;
-  const myTraits = mine.traits.map((tr,i) => {
-    const g = opp.rev.includes(i);
+  const myTraits = opp.active.map(i => {
+    const tr = mine.traits[i], g = opp.rev.includes(i);
     return `<li class="${g ? "open" : ""}">${g ? "👀" : "•"} <b>${esc(tr.topic)}:</b> ${esc(tr.text)}${g ? " <small>(sudah ditebak lawan)</small>" : ""}</li>`;
   }).join("");
   const tags = [
     me.cat ? `<span class="tag">🏷️ ${esc(a.category)}</span>` : "",
     me.first ? `<span class="tag">🔤 Huruf ${esc(a.name[0].toUpperCase())}</span>` : "",
+    me.len ? `<span class="tag">🔢 ${a.name.replace(/[^A-Za-z]/g,"").length} huruf</span>` : "",
     ...me.kw.map(h => `<span class="tag">🔑 ${esc(h.topic)}: "${esc(h.word)}"</span>`),
-    me.shield ? `<span class="tag">🛡️ Perisai aktif</span>` : ""
+    me.shield ? `<span class="tag">🛡️ Perisai aktif</span>` : "",
+    me.extra ? `<span class="tag">⏩ Giliran ekstra aktif</span>` : ""
   ].join("");
-  const traits = a.traits.map((tr,i) => me.rev.includes(i)
+  const traits = me.active.map(i => { const tr = a.traits[i]; return me.rev.includes(i)
     ? `<li class="open">✅ <b>${esc(tr.topic)}:</b> ${esc(tr.text)}</li>`
-    : `<li class="hid">❓ <b>${esc(tr.topic)}:</b> ???</li>`).join("");
+    : `<li class="hid">❓ <b>${esc(tr.topic)}:</b> ???</li>`; }).join("");
   const cardsHtml = me.cards.length
     ? me.cards.map((id,idx) => { const c = CARDS.find(x => x.id === id);
-        return `<button class="sup" data-card="${idx}">${c.icon} <b>${c.name}</b><small>${c.desc}</small></button>`; }).join("")
+        return `<button class="sup rar-${c.rar}" data-card="${idx}">${rtag(c)}<br>${c.icon} <b>${c.name}</b><small>${c.desc}</small></button>`; }).join("")
     : `<div class="meta">Belum punya kartu. Kehilangan ${CONFIG.cardEveryLost} darah untuk mendapat 1 kartu.</div>`;
   const choices = me.choices ? `<div class="choices">${me.choices.map(c => `<button data-choice="${esc(c)}">${esc(c)}</button>`).join("")}</div>` : "";
 
@@ -213,8 +250,8 @@ function drawGame(){
           <div class="center-tags"><span class="tag">🏷️ ${esc(mine.category)}</span></div>
         </div>
         <div class="card">
-          <div class="section-title"><span>📋 Petunjuk hewanmu</span><span class="meta">👀 ${oppGuessed}/${mine.traits.length} ditebak</span></div>
-          <div class="progress"><i style="width:${(oppGuessed/mine.traits.length)*100}%;background:linear-gradient(90deg,var(--p2),var(--accent))"></i></div>
+          <div class="section-title"><span>📋 Petunjuk hewanmu</span><span class="meta">👀 ${oppGuessed}/${opp.active.length} ditebak</span></div>
+          <div class="progress"><i style="width:${(oppGuessed/opp.active.length)*100}%;background:linear-gradient(90deg,var(--p2),var(--accent))"></i></div>
           <ul class="traits">${myTraits}</ul>
         </div>
       </div>

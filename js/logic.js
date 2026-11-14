@@ -2,6 +2,7 @@
 function findTrait(p, text){
   let best = -1, bestScore = 0, already = false;
   A(p).traits.forEach((tr, i) => {
+    if(!p.active.includes(i)) return;
     const sc = matchTrait(text, tr);
     if(sc === 0) return;
     if(p.rev.includes(i)){ already = true; return; }
@@ -20,13 +21,10 @@ function applyWrong(p, msg){
     return { kind:"shield", icon:"🛡️", title:"Terlindungi!", msg, badge:"Perisai menahan serangan, darah aman" };
   }
   p.hp--; p.hpLost++;
-  let extra = "";
-  if(p.hpLost % CONFIG.cardEveryLost === 0){
-    const c = drawCard(p);
-    extra += `<div class="r-gift">🎁 Kartu baru: <b>${c.icon} ${c.name}</b><small>${c.desc}</small></div>`;
-  }
+  let extra = "", spin = null;
+  if(p.hpLost % CONFIG.cardEveryLost === 0) spin = makeSpin(drawCard(p));   // UI memutar reel lalu menampilkan kartunya
   if(p.hp <= 0) extra += `<div class="alert">🩸 Darah ${esc(p.name)} habis! Di giliran berikutnya ${esc(p.name)} wajib menjawab nama hewan.</div>`;
-  return { kind:"bad", icon:"💔", title:"Salah!", msg, badge:"−1 darah", extra };
+  return { kind:"bad", icon:"💔", title:"Salah!", msg, badge:"−1 darah", extra, spin };
 }
 function doClue(p, text){
   text = (text||"").trim();
@@ -55,7 +53,7 @@ function doAnswer(p, idx, text){
       G.over = { winner:idx, reason:`${p.name} mencapai ${p.points} poin! Hewan terakhirnya: ${animalName}.` };
       return;
     }
-    assign(p);
+    assign(p, idx);
     G.view = { type:"result", r:{ kind:"good", icon:"🎉", title:"Benar!", msg:`${esc(p.name)} berhasil menebak hewannya.`,
       reveal:`<span class="big-emoji">${animalEmoji}</span>${esc(animalName)}`, badge:`+${gain} poin`,
       extra:`<p class="meta" style="margin:0 0 8px">Hewan baru dan darah penuh menunggu di giliran berikutnya.</p>` }};
@@ -71,8 +69,12 @@ function doCard(p, i){
   const card = CARDS.find(c => c.id === p.cards[i]);
   if(!card) return;
   const msg = card.use(p);
-  if(msg === null) G.log = `Kartu "${card.name}" belum bisa dipakai sekarang.`;
-  else { p.cards.splice(i, 1); G.log = `${card.icon} ${card.name}: ${msg}`; }
+  if(msg === null){ G.log = `Kartu "${card.name}" belum bisa dipakai sekarang.`; return; }
+  p.cards.splice(i, 1);                             // kartu curian ditambah di akhir, jadi indeks i tetap benar
+  G.log = `${card.icon} ${card.name}: ${msg}`;
+  if(p.points >= G.target){                         // Bintang Bonus bisa langsung menang
+    G.over = { winner:G.players.indexOf(p), reason:`${p.name} mencapai ${p.points} poin lewat ${card.name}!` };
+  }
 }
 
 // semua aksi (dari host maupun tamu) masuk lewat sini, hanya di host
@@ -80,11 +82,14 @@ function handle(a){
   if(!G) return;
   const idx = a.player, p = G.players[idx];
   if(a.type === "again"){
-    if(G.over) newGame(G.players[0].name, G.players[1].name, G.target);
+    if(G.over) newGame(G.players[0].name, G.players[1].name, G.target, G);
   } else if(G.over){
     return;
   } else if(a.type === "next"){
-    if(G.view.type === "result" && idx === G.turn){ G.turn = 1 - G.turn; G.view = { type:"play" }; G.log = ""; }
+    if(G.view.type === "result" && idx === G.turn){
+      if(p.extra){ p.extra = false; G.view = { type:"play" }; G.log = "⏩ Giliran ekstra! Kamu main lagi."; }
+      else { G.turn = 1 - G.turn; G.view = { type:"play" }; G.log = ""; }
+    }
   } else if(G.view.type === "play" && idx === G.turn){
     if(a.type === "clue")   doClue(p, a.text);
     if(a.type === "answer") doAnswer(p, idx, a.text);
